@@ -1,24 +1,53 @@
 # core/window.py
 # Two-window layout:
 #   sprite_win  — always-visible borderless transparent widget, bottom-right corner
-#   chat_win    — compact speech-bubble panel that pops up above the sprite on click
+#   chat_win    — retro RPG-style dialogue panel that pops up below the sprite on click
 #
 # Clicking the sprite toggles the chat panel.
 # Tray "Open Buddy" also shows the chat panel via the window_open event.
 # Escape or the X button collapses it back to just the sprite.
 
-import customtkinter as ctk
 import tkinter as tk
+import tkinter.font as tkfont
+import customtkinter as ctk
 from core.events import bus
 from core.sprite import SpriteAnimator
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# Chat panel dimensions — compact, proportional to sprite
+# Chat panel dimensions
 CHAT_H = 240
 TAIL_H = 14
 TAIL_W = 24
+
+# RPG colour palette
+_BG        = "#0d0d1a"   # main background
+_BORDER    = "#4a4a8a"   # border / accent
+_TITLEBAR  = "#1a1a3a"   # title bar background
+_TITLE_FG  = "#8888ff"   # title label text
+_CLOSE_FG  = "#ff6666"   # close button
+_TEXT_FG   = "#ccccff"   # chat history text (soft lavender)
+_INPUT_BG  = "#1a1a3a"   # input field background
+_INPUT_FG  = "#ffffff"   # input text
+_PH_FG     = "#555577"   # placeholder text colour
+_PH_TEXT   = "Say something..."
+_BTN_OFF   = "#8888ff"   # search toggle OFF colour
+_BTN_ON    = "#ffff44"   # search toggle ON colour
+
+TRANSPARENT = "#ff00ff"
+
+
+def _get_pixel_font(size: int = 11) -> tuple:
+    """Return the best available monospaced pixel-style font."""
+    try:
+        available = set(tkfont.families())
+        for name in ("Courier New", "Lucida Console", "Consolas"):
+            if name in available:
+                return (name, size)
+    except Exception:
+        pass
+    return ("TkFixedFont", size)
 
 
 class ChatWindow:
@@ -31,6 +60,8 @@ class ChatWindow:
         self._chat_visible = False
         self._web_search_on = False
         self._message_buffer: list[tuple[str, str]] = []
+        self._chat_drag_x = 0
+        self._chat_drag_y = 0
 
         bus.on("llm_token",         self._on_token)
         bus.on("llm_done",          self._on_done)
@@ -52,8 +83,6 @@ class ChatWindow:
         sprite_cfg = self.config["sprite"]
         size = sprite_cfg["frame_width"] * sprite_cfg["display_scale"]
         margin = 4
-
-        TRANSPARENT = "#ff00ff"
 
         self.sprite_win = tk.Tk()
         self.sprite_win.overrideredirect(True)
@@ -113,14 +142,12 @@ class ChatWindow:
 
     def _chat_position(self):
         """Return (chat_x, chat_y) using the sprite's current absolute screen coordinates.
-        Works correctly across multiple monitors — coordinates may be negative or exceed
-        primary screen bounds when secondary monitors are involved."""
+        Works correctly across multiple monitors."""
         chat_w    = self.config["window"]["width"]
         sprite_sz = (self.config["sprite"]["frame_width"]
                      * self.config["sprite"]["display_scale"])
         total_h   = CHAT_H + TAIL_H
 
-        # Always read fresh — sprite may have been dragged to a different monitor
         self.sprite_win.update_idletasks()
         sx = self.sprite_win.winfo_x()
         sy = self.sprite_win.winfo_y()
@@ -129,7 +156,6 @@ class ChatWindow:
 
         # Horizontal: sprite sits ~30% from left edge of chat panel
         chat_x = sx + (sw // 2) - (chat_w // 3)
-        # Clamp so chat never flies off-screen to the right of the sprite
         chat_x = min(chat_x, sx + 600)
 
         # Vertical: always below the sprite
@@ -174,13 +200,11 @@ class ChatWindow:
             self._create_chat_panel()
             self.sprite_win.after(50, lambda: bus.emit("window_open"))
         else:
-            # Re-read sprite position every open — sprite may have moved monitors
             self._reposition_chat_panel()
             self.chat_win.deiconify()
             self.chat_win.lift()
             self.input_box.focus_set()
 
-        # Start drift-correction loop for while chat is open
         self.sprite_win.after(500, self._start_position_sync)
 
     def _hide_chat(self, **kwargs):
@@ -190,97 +214,141 @@ class ChatWindow:
         if self.chat_win:
             self.chat_win.withdraw()
 
+    # ── Chat window title-bar drag ─────────────────────────────────────────────
+
+    def _on_chat_drag_start(self, event):
+        self._chat_drag_x = event.x_root
+        self._chat_drag_y = event.y_root
+
+    def _on_chat_drag_motion(self, event):
+        dx = event.x_root - self._chat_drag_x
+        dy = event.y_root - self._chat_drag_y
+        x = self.chat_win.winfo_x() + dx
+        y = self.chat_win.winfo_y() + dy
+        self.chat_win.geometry(f"+{x}+{y}")
+        self._chat_drag_x = event.x_root
+        self._chat_drag_y = event.y_root
+
     # ── Chat panel construction ───────────────────────────────────────────────
 
     def _create_chat_panel(self):
-        chat_w    = self.config["window"]["width"]
-        sprite_sz = (self.config["sprite"]["frame_width"]
-                     * self.config["sprite"]["display_scale"])
+        chat_w  = self.config["window"]["width"]
         total_h = CHAT_H + TAIL_H
+
         self.sprite_win.update_idletasks()
-
-
 
         self.chat_win = ctk.CTkToplevel(self.sprite_win)
         self.chat_win.overrideredirect(True)
         self.chat_win.attributes("-topmost", True)
+        self.chat_win.attributes("-transparentcolor", TRANSPARENT)
         self.chat_win.resizable(False, False)
-        # Position after window exists so winfo_screenwidth reads the right monitor
+        self.chat_win.configure(fg_color=_BG)
         chat_x, chat_y = self._chat_position()
         self.chat_win.geometry(f"{chat_w}x{total_h}+{chat_x}+{chat_y}")
 
-        
-
-
-
-
-
-        # Grab the actual CTk background color for the tail to match exactly
         self.chat_win.update_idletasks()
-        try:
-            panel_bg = self.chat_win._fg_frame.cget("fg_color")
-            if isinstance(panel_bg, (list, tuple)):
-                panel_bg = panel_bg[1]  # index 1 = dark mode
-        except Exception:
-            panel_bg = "#2b2b2b"
-    
 
-        tail_cx = chat_w - sprite_sz // 2
-        tail_cx = max(TAIL_W + 4, min(chat_w - TAIL_W - 4, tail_cx))
+        pixel_font      = _get_pixel_font(11)
+        pixel_font_lg   = _get_pixel_font(13)
+
+        # ── Tail strip (transparent, below the border box) ───────────────────
         tail_canvas = tk.Canvas(
             self.chat_win, width=chat_w, height=TAIL_H,
-            bg=panel_bg, highlightthickness=0
+            bg=_BG, highlightthickness=0
         )
         tail_canvas.pack(side="bottom", fill="x")
-        tail_canvas.create_polygon(
-            tail_cx - TAIL_W // 2, 0,
-            tail_cx + TAIL_W // 2, 0,
-            tail_cx,               TAIL_H,
-            fill=panel_bg, outline=""
+
+        # ── Border frame (2px _BORDER colour visible as frame edge) ──────────
+        border_frame = tk.Frame(
+            self.chat_win, bg=_BORDER, bd=0, highlightthickness=0
         )
-        # Custom title bar
-        title_bar = ctk.CTkFrame(self.chat_win, height=32, corner_radius=0)
+        border_frame.pack(fill="both", expand=True)
+
+        inner = tk.Frame(border_frame, bg=_BG, bd=0, highlightthickness=0)
+        inner.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # ── Custom title bar ──────────────────────────────────────────────────
+        title_bar = tk.Frame(inner, bg=_TITLEBAR, height=24, bd=0, highlightthickness=0)
         title_bar.pack(fill="x", side="top")
         title_bar.pack_propagate(False)
-        ctk.CTkLabel(
-            title_bar, text="Buddy", font=("Segoe UI", 11, "bold")
-        ).pack(side="left", padx=10)
-        ctk.CTkButton(
-            title_bar, text="X", width=32, height=32,
-            corner_radius=0, fg_color="transparent",
-            hover_color="#c42b1c", font=("Segoe UI", 10, "bold"),
-            command=self._hide_chat
-        ).pack(side="right")
+        title_bar.bind("<ButtonPress-1>", self._on_chat_drag_start)
+        title_bar.bind("<B1-Motion>",     self._on_chat_drag_motion)
 
-        # Input row — pack before chat box so it anchors to bottom of content
-        input_frame = ctk.CTkFrame(self.chat_win, fg_color="transparent")
-        input_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
-
-        self.input_box = ctk.CTkEntry(
-            input_frame, placeholder_text="Say something...", font=("Segoe UI", 12)
+        title_lbl = tk.Label(
+            title_bar, text="[ BUDDY ]",
+            bg=_TITLEBAR, fg=_TITLE_FG, font=pixel_font
         )
-        self.input_box.pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self.input_box.bind("<Return>", self._on_send)
-        self.input_box.bind("<Escape>", lambda e: self._hide_chat())
+        title_lbl.pack(side="left", padx=8)
+        title_lbl.bind("<ButtonPress-1>", self._on_chat_drag_start)
+        title_lbl.bind("<B1-Motion>",     self._on_chat_drag_motion)
 
-        # Web search icon toggle — replaces Send button + old labeled toggle
-        self._web_toggle_btn = ctk.CTkButton(
+        close_lbl = tk.Label(
+            title_bar, text="✕",
+            bg=_TITLEBAR, fg=_CLOSE_FG, font=pixel_font,
+            cursor="hand2", padx=8
+        )
+        close_lbl.pack(side="right")
+        close_lbl.bind("<Button-1>", lambda e: self._hide_chat())
+
+        # ── Input row (anchored to bottom) ────────────────────────────────────
+        input_frame = tk.Frame(inner, bg=_BG, bd=0, highlightthickness=0)
+        input_frame.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
+
+        self.input_box = tk.Entry(
+            input_frame,
+            font=pixel_font,
+            bg=_INPUT_BG,
+            fg=_PH_FG,
+            insertbackground=_INPUT_FG,
+            relief="flat",
+            bd=0,
+            highlightbackground=_BORDER,
+            highlightthickness=1,
+        )
+        self.input_box.pack(side="left", fill="x", expand=True, padx=(0, 6), ipady=4)
+        self.input_box.insert(0, _PH_TEXT)
+        self.input_box.bind("<FocusIn>",  self._on_input_focus_in)
+        self.input_box.bind("<FocusOut>", self._on_input_focus_out)
+        self.input_box.bind("<Return>",   self._on_send)
+        self.input_box.bind("<Escape>",   lambda e: self._hide_chat())
+
+        self._web_toggle_btn = tk.Button(
             input_frame,
             text="🔍",
-            width=34, height=34,
-            corner_radius=6,
-            font=("Segoe UI", 15),
-            fg_color="#1f538d" if self._web_search_on else "#3a3a3a",
-            hover_color="#2a6ab5" if self._web_search_on else "#4a4a4a",
-            command=self._toggle_web_search
+            font=pixel_font_lg,
+            bg=_INPUT_BG,
+            fg=_BTN_OFF,
+            activebackground=_TITLEBAR,
+            activeforeground=_BTN_OFF,
+            relief="flat",
+            bd=0,
+            highlightbackground=_BORDER,
+            highlightthickness=1,
+            cursor="hand2",
+            width=3,
+            command=self._toggle_web_search,
         )
-        self._web_toggle_btn.pack(side="right")
+        self._web_toggle_btn.pack(side="right", ipady=2)
 
-        # Chat history — fills remaining space between title bar and input
-        self.chat_box = ctk.CTkTextbox(
-            self.chat_win, state="disabled", font=("Segoe UI", 12), wrap="word"
+        # ── Chat history (fills remaining space) ──────────────────────────────
+        self.chat_box = tk.Text(
+            inner,
+            state="disabled",
+            font=pixel_font,
+            wrap="word",
+            bg=_BG,
+            fg=_TEXT_FG,
+            insertbackground=_TEXT_FG,
+            selectbackground=_BORDER,
+            selectforeground=_TEXT_FG,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=8,
+            pady=4,
+            cursor="arrow",
         )
-        self.chat_box.pack(fill="both", expand=True, padx=10, pady=(4, 4))
+        self.chat_box.pack(fill="both", expand=True)
 
         # Flush messages that arrived before the panel existed
         for sender, text in self._message_buffer:
@@ -289,25 +357,33 @@ class ChatWindow:
 
         self.input_box.focus_set()
 
+    # ── Input placeholder helpers ─────────────────────────────────────────────
+
+    def _on_input_focus_in(self, event=None):
+        if self.input_box.get() == _PH_TEXT:
+            self.input_box.delete(0, "end")
+            self.input_box.configure(fg=_INPUT_FG)
+
+    def _on_input_focus_out(self, event=None):
+        if not self.input_box.get():
+            self.input_box.insert(0, _PH_TEXT)
+            self.input_box.configure(fg=_PH_FG)
+
     # ── Web search toggle ─────────────────────────────────────────────────────
 
     def _toggle_web_search(self):
         self._web_search_on = not self._web_search_on
         if self._web_search_on:
-            self._web_toggle_btn.configure(
-                fg_color="#1f538d", hover_color="#2a6ab5"
-            )
+            self._web_toggle_btn.configure(fg=_BTN_ON, text="◈")
         else:
-            self._web_toggle_btn.configure(
-                fg_color="#3a3a3a", hover_color="#4a4a4a"
-            )
+            self._web_toggle_btn.configure(fg=_BTN_OFF, text="🔍")
         bus.emit("websearch_force", enabled=self._web_search_on)
 
     # ── Messaging ─────────────────────────────────────────────────────────────
 
     def _on_send(self, event=None):
         text = self.input_box.get().strip()
-        if not text or self._streaming:
+        if not text or text == _PH_TEXT or self._streaming:
             return
         self.input_box.delete(0, "end")
         self._append("You", text)
@@ -319,8 +395,14 @@ class ChatWindow:
     def _append(self, sender: str, text: str):
         if not self.chat_win:
             return
+        if sender == "Buddy":
+            prefix = "▶ "
+        elif sender == "You":
+            prefix = "· "
+        else:
+            prefix = "  "
         self.chat_box.configure(state="normal")
-        self.chat_box.insert("end", f"{sender}: {text}\n\n")
+        self.chat_box.insert("end", f"{prefix}{sender}: {text}\n\n")
         self.chat_box.configure(state="disabled")
         self.chat_box.see("end")
 
