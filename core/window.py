@@ -34,6 +34,9 @@ _PH_FG     = "#555577"   # placeholder text colour
 _PH_TEXT   = "Say something..."
 _BTN_OFF   = "#8888ff"   # search toggle OFF colour
 _BTN_ON    = "#ffff44"   # search toggle ON colour
+_BUBBLE_BUDDY = "#1a1a3a"  # Buddy bubble background
+_BUBBLE_YOU   = "#2a2a5a"  # Your bubble background
+_SYSTEM_FG    = "#555577"  # System / tool message text
 
 TRANSPARENT = "#ff00ff"
 
@@ -60,8 +63,17 @@ class ChatWindow:
         self._chat_visible = False
         self._web_search_on = False
         self._message_buffer: list[tuple[str, str]] = []
+
+        # Chat window title-bar drag state
         self._chat_drag_x = 0
         self._chat_drag_y = 0
+
+        # Bubble / streaming state
+        self._msg_canvas: tk.Canvas | None = None
+        self._msg_frame: tk.Frame | None = None
+        self._frame_id = None
+        self._streaming_label: tk.Label | None = None
+        self._streaming_text: str = ""
 
         bus.on("llm_token",         self._on_token)
         bus.on("llm_done",          self._on_done)
@@ -154,11 +166,8 @@ class ChatWindow:
         sw = self.sprite_win.winfo_width()
         sh = self.sprite_win.winfo_height()
 
-        # Horizontal: sprite sits ~30% from left edge of chat panel
         chat_x = sx + (sw // 2) - (chat_w // 3)
         chat_x = min(chat_x, sx + 600)
-
-        # Vertical: always below the sprite
         chat_y = sy + sh + 8
 
         return chat_x, chat_y
@@ -248,20 +257,19 @@ class ChatWindow:
 
         self.chat_win.update_idletasks()
 
-        pixel_font      = _get_pixel_font(11)
-        pixel_font_lg   = _get_pixel_font(13)
+        pixel_font    = _get_pixel_font(11)
+        pixel_font_lg = _get_pixel_font(13)
+        pixel_font_sm = _get_pixel_font(9)
 
-        # ── Tail strip (transparent, below the border box) ───────────────────
+        # ── Tail strip ───────────────────────────────────────────────────────
         tail_canvas = tk.Canvas(
             self.chat_win, width=chat_w, height=TAIL_H,
             bg=_BG, highlightthickness=0
         )
         tail_canvas.pack(side="bottom", fill="x")
 
-        # ── Border frame (2px _BORDER colour visible as frame edge) ──────────
-        border_frame = tk.Frame(
-            self.chat_win, bg=_BORDER, bd=0, highlightthickness=0
-        )
+        # ── Border frame ─────────────────────────────────────────────────────
+        border_frame = tk.Frame(self.chat_win, bg=_BORDER, bd=0, highlightthickness=0)
         border_frame.pack(fill="both", expand=True)
 
         inner = tk.Frame(border_frame, bg=_BG, bd=0, highlightthickness=0)
@@ -290,7 +298,7 @@ class ChatWindow:
         close_lbl.pack(side="right")
         close_lbl.bind("<Button-1>", lambda e: self._hide_chat())
 
-        # ── Input row (anchored to bottom) ────────────────────────────────────
+        # ── Input row ─────────────────────────────────────────────────────────
         input_frame = tk.Frame(inner, bg=_BG, bd=0, highlightthickness=0)
         input_frame.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
 
@@ -330,32 +338,43 @@ class ChatWindow:
         )
         self._web_toggle_btn.pack(side="right", ipady=2)
 
-        # ── Chat history (fills remaining space) ──────────────────────────────
-        self.chat_box = tk.Text(
-            inner,
-            state="disabled",
-            font=pixel_font,
-            wrap="word",
-            bg=_BG,
-            fg=_TEXT_FG,
-            insertbackground=_TEXT_FG,
-            selectbackground=_BORDER,
-            selectforeground=_TEXT_FG,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=8,
-            pady=4,
-            cursor="arrow",
+        # ── Scrollable bubble area ─────────────────────────────────────────────
+        self._msg_canvas = tk.Canvas(
+            inner, bg=_BG, highlightthickness=0, bd=0
         )
-        self.chat_box.pack(fill="both", expand=True)
+        self._msg_canvas.pack(fill="both", expand=True, pady=(4, 4))
 
-        # Flush messages that arrived before the panel existed
+        self._msg_frame = tk.Frame(self._msg_canvas, bg=_BG)
+        self._frame_id = self._msg_canvas.create_window(
+            (0, 0), window=self._msg_frame, anchor="nw"
+        )
+
+        self._msg_frame.bind("<Configure>", self._on_msg_frame_configure)
+        self._msg_canvas.bind("<Configure>", self._on_msg_canvas_configure)
+        self._msg_canvas.bind("<MouseWheel>", self._on_mousewheel)
+
+        # Flush buffered messages
         for sender, text in self._message_buffer:
             self._append(sender, text)
         self._message_buffer.clear()
 
         self.input_box.focus_set()
+
+    # ── Scroll helpers ────────────────────────────────────────────────────────
+
+    def _on_msg_frame_configure(self, event=None):
+        self._msg_canvas.configure(scrollregion=self._msg_canvas.bbox("all"))
+
+    def _on_msg_canvas_configure(self, event):
+        self._msg_canvas.itemconfig(self._frame_id, width=event.width)
+
+    def _on_mousewheel(self, event):
+        self._msg_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _scroll_to_bottom(self):
+        self._msg_canvas.update_idletasks()
+        self._msg_canvas.configure(scrollregion=self._msg_canvas.bbox("all"))
+        self._msg_canvas.yview_moveto(1.0)
 
     # ── Input placeholder helpers ─────────────────────────────────────────────
 
@@ -392,30 +411,95 @@ class ChatWindow:
         bus.emit("sprite_state_change", state="listening")
         self.llm.chat(text)
 
+    def _add_bubble(self, sender: str, text: str) -> tk.Label:
+        """Create a chat bubble widget and return the text label (for streaming updates)."""
+        chat_w     = self.config["window"]["width"]
+        pixel_font = _get_pixel_font(11)
+        pixel_font_sm = _get_pixel_font(9)
+        max_w      = int(chat_w * 0.64)
+
+        is_buddy  = (sender == "Buddy")
+        is_you    = (sender == "You")
+
+        row = tk.Frame(self._msg_frame, bg=_BG)
+        row.pack(fill="x", padx=6, pady=(2, 0))
+
+        # System / tool messages — centred, dim
+        if not is_buddy and not is_you:
+            lbl = tk.Label(
+                row, text=text,
+                bg=_BG, fg=_SYSTEM_FG,
+                font=pixel_font_sm,
+                wraplength=chat_w - 24,
+                justify="center",
+            )
+            lbl.pack(anchor="center", pady=2)
+            return lbl
+
+        if is_buddy:
+            bubble_bg = _BUBBLE_BUDDY
+            bubble_fg = _TEXT_FG
+            name_fg   = _TITLE_FG
+            justify   = "left"
+            anchor    = "w"
+        else:
+            bubble_bg = _BUBBLE_YOU
+            bubble_fg = _INPUT_FG
+            name_fg   = "#aaaaff"
+            justify   = "right"
+            anchor    = "e"
+
+        # Prefix glyph (only for Buddy, left side)
+        if is_buddy:
+            tk.Label(
+                row, text="▶",
+                bg=_BG, fg=name_fg, font=pixel_font
+            ).pack(side="left", anchor="n", padx=(0, 4), pady=(4, 0))
+
+        bubble = tk.Frame(row, bg=bubble_bg, padx=8, pady=4)
+        bubble.pack(side="left" if is_buddy else "right", anchor="n")
+
+        # Sender name
+        tk.Label(
+            bubble, text=sender,
+            bg=bubble_bg, fg=name_fg, font=pixel_font_sm
+        ).pack(anchor=anchor)
+
+        # Message text
+        text_lbl = tk.Label(
+            bubble,
+            text=text,
+            bg=bubble_bg, fg=bubble_fg,
+            font=pixel_font,
+            wraplength=max_w,
+            justify=justify,
+            anchor=anchor,
+        )
+        text_lbl.pack(anchor=anchor)
+
+        return text_lbl
+
     def _append(self, sender: str, text: str):
         if not self.chat_win:
             return
+        lbl = self._add_bubble(sender, text)
         if sender == "Buddy":
-            prefix = "▶ "
-        elif sender == "You":
-            prefix = "· "
-        else:
-            prefix = "  "
-        self.chat_box.configure(state="normal")
-        self.chat_box.insert("end", f"{prefix}{sender}: {text}\n\n")
-        self.chat_box.configure(state="disabled")
-        self.chat_box.see("end")
+            self._streaming_label = lbl
+            self._streaming_text  = text
+        self._scroll_to_bottom()
 
     def _on_token(self, token: str, **kwargs):
         if not self.chat_win or not self._chat_visible:
             return
-        self.chat_box.configure(state="normal")
-        self.chat_box.insert("end-2c", token)
-        self.chat_box.configure(state="disabled")
-        self.chat_box.see("end")
+        self._streaming_text += token
+        if self._streaming_label:
+            self._streaming_label.configure(text=self._streaming_text)
+            self._scroll_to_bottom()
 
     def _on_done(self, full_text: str, **kwargs):
         self._streaming = False
+        self._streaming_label = None
+        self._streaming_text  = ""
 
     def _on_push_message(self, sender: str, text: str, **kwargs):
         if self.chat_win:
