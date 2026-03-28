@@ -78,7 +78,9 @@ class WebSearchModule:
         Uses a direct Ollama call with a neutral system prompt so the model cannot
         apply tools like OPEN[] — it only outputs plain search keywords."""
         try:
-            history = self._llm.history[-6:]
+            # Only use the immediately prior exchange for context.
+            # More history causes topic bleed (e.g. Spotify context polluting a weather query).
+            history = self._llm.history[-2:]
             history_text = ""
             for turn in history[:-1]:
                 role = "User" if turn["role"] == "user" else "Assistant"

@@ -72,8 +72,7 @@ class ChatWindow:
         self._msg_canvas: tk.Canvas | None = None
         self._msg_frame: tk.Frame | None = None
         self._frame_id = None
-        self._streaming_label: tk.Label | None = None
-        self._streaming_text: str = ""
+        self._streaming_widget: tk.Text | None = None
 
         bus.on("llm_token",         self._on_token)
         bus.on("llm_done",          self._on_done)
@@ -371,6 +370,21 @@ class ChatWindow:
     def _on_mousewheel(self, event):
         self._msg_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
+    def _bind_scroll(self, widget):
+        """Recursively bind mousewheel on all bubble child widgets to the canvas scroller."""
+        widget.bind("<MouseWheel>", self._on_mousewheel)
+        for child in widget.winfo_children():
+            self._bind_scroll(child)
+
+    def _resize_text_widget(self, widget: tk.Text):
+        """Resize a Text widget's height to match its wrapped content."""
+        try:
+            result = widget.count("1.0", "end", "displaylines")
+            h = max(1, result[0] if result else 1)
+            widget.configure(height=h)
+        except Exception:
+            pass
+
     def _scroll_to_bottom(self):
         self._msg_canvas.update_idletasks()
         self._msg_canvas.configure(scrollregion=self._msg_canvas.bbox("all"))
@@ -411,20 +425,21 @@ class ChatWindow:
         bus.emit("sprite_state_change", state="listening")
         self.llm.chat(text)
 
-    def _add_bubble(self, sender: str, text: str) -> tk.Label:
-        """Create a chat bubble widget and return the text label (for streaming updates)."""
-        chat_w     = self.config["window"]["width"]
-        pixel_font = _get_pixel_font(11)
+    def _add_bubble(self, sender: str, text: str) -> tk.Text:
+        """Create a chat bubble widget and return the tk.Text for streaming updates."""
+        chat_w        = self.config["window"]["width"]
+        pixel_font    = _get_pixel_font(11)
         pixel_font_sm = _get_pixel_font(9)
-        max_w      = int(chat_w * 0.64)
+        # Width in characters: Courier New 11px ≈ 7px/char
+        char_width    = max(10, int(chat_w * 0.64) // 7)
 
-        is_buddy  = (sender == "Buddy")
-        is_you    = (sender == "You")
+        is_buddy = (sender == "Buddy")
+        is_you   = (sender == "You")
 
         row = tk.Frame(self._msg_frame, bg=_BG)
         row.pack(fill="x", padx=6, pady=(2, 0))
 
-        # System / tool messages — centred, dim
+        # System / tool messages — centred, dim label (no bubble)
         if not is_buddy and not is_you:
             lbl = tk.Label(
                 row, text=text,
@@ -434,22 +449,23 @@ class ChatWindow:
                 justify="center",
             )
             lbl.pack(anchor="center", pady=2)
-            return lbl
+            self._bind_scroll(row)
+            # Wrap in a dummy Text so callers always get a consistent return type
+            dummy = tk.Text(row, width=1, height=1)
+            dummy.pack_forget()
+            return dummy
 
         if is_buddy:
             bubble_bg = _BUBBLE_BUDDY
             bubble_fg = _TEXT_FG
             name_fg   = _TITLE_FG
-            justify   = "left"
-            anchor    = "w"
+            side      = "left"
         else:
             bubble_bg = _BUBBLE_YOU
             bubble_fg = _INPUT_FG
             name_fg   = "#aaaaff"
-            justify   = "right"
-            anchor    = "e"
+            side      = "right"
 
-        # Prefix glyph (only for Buddy, left side)
         if is_buddy:
             tk.Label(
                 row, text="▶",
@@ -457,49 +473,64 @@ class ChatWindow:
             ).pack(side="left", anchor="n", padx=(0, 4), pady=(4, 0))
 
         bubble = tk.Frame(row, bg=bubble_bg, padx=8, pady=4)
-        bubble.pack(side="left" if is_buddy else "right", anchor="n")
+        bubble.pack(side=side, anchor="n")
 
         # Sender name
         tk.Label(
             bubble, text=sender,
             bg=bubble_bg, fg=name_fg, font=pixel_font_sm
-        ).pack(anchor=anchor)
+        ).pack(anchor="w" if is_buddy else "e")
 
-        # Message text
-        text_lbl = tk.Label(
+        # Message text — tk.Text so user can select and copy
+        msg_text = tk.Text(
             bubble,
-            text=text,
-            bg=bubble_bg, fg=bubble_fg,
             font=pixel_font,
-            wraplength=max_w,
-            justify=justify,
-            anchor=anchor,
+            bg=bubble_bg, fg=bubble_fg,
+            relief="flat", bd=0, highlightthickness=0,
+            wrap="word",
+            width=char_width,
+            height=1,
+            cursor="xterm",
+            exportselection=True,
+            selectbackground=_BORDER,
+            selectforeground=_INPUT_FG,
+            inactiveselectbackground=_BORDER,
+            spacing1=1, spacing3=1,
         )
-        text_lbl.pack(anchor=anchor)
+        if text:
+            msg_text.insert("1.0", text)
+            msg_text.configure(state="disabled")
+            self._resize_text_widget(msg_text)
+        else:
+            msg_text.configure(state="disabled")
 
-        return text_lbl
+        msg_text.pack(anchor="w" if is_buddy else "e")
+        msg_text.bind("<Configure>", lambda e: self._resize_text_widget(msg_text))
+
+        self._bind_scroll(row)
+        return msg_text
 
     def _append(self, sender: str, text: str):
         if not self.chat_win:
             return
-        lbl = self._add_bubble(sender, text)
+        widget = self._add_bubble(sender, text)
         if sender == "Buddy":
-            self._streaming_label = lbl
-            self._streaming_text  = text
+            self._streaming_widget = widget
         self._scroll_to_bottom()
 
     def _on_token(self, token: str, **kwargs):
         if not self.chat_win or not self._chat_visible:
             return
-        self._streaming_text += token
-        if self._streaming_label:
-            self._streaming_label.configure(text=self._streaming_text)
+        if self._streaming_widget:
+            self._streaming_widget.configure(state="normal")
+            self._streaming_widget.insert("end", token)
+            self._resize_text_widget(self._streaming_widget)
+            self._streaming_widget.configure(state="disabled")
             self._scroll_to_bottom()
 
     def _on_done(self, full_text: str, **kwargs):
         self._streaming = False
-        self._streaming_label = None
-        self._streaming_text  = ""
+        self._streaming_widget = None
 
     def _on_push_message(self, sender: str, text: str, **kwargs):
         if self.chat_win:
