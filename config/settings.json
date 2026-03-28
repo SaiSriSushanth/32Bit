@@ -1,0 +1,76 @@
+{
+  "username": "Sushanth",
+  "window": {
+    "width": 380,
+    "height": 520,
+    "position": "bottom-right",
+    "always_on_top": false
+  },
+  "sprite": {
+    "sheet_path": "assets/sprite_sheet.png",
+    "frame_width": 128,
+    "frame_height": 128,
+    "display_scale": 1,
+    "fps": 8,
+    "states": {
+      "idle": {
+        "row": 0,
+        "frames": 6
+      },
+      "listening": {
+        "row": 1,
+        "frames": 6
+      },
+      "thinking": {
+        "row": 2,
+        "frames": 7
+      },
+      "speaking": {
+        "row": 3,
+        "frames": 8
+      },
+      "wakeup": {
+        "row": 4,
+        "frames": 8,
+        "loop": false
+      }
+    }
+  },
+  "sound": {
+    "enabled": false,
+    "startup_sound": "assets/sounds/startup.wav",
+    "notify_sound": "assets/sounds/notify.wav",
+    "volume": 0.6
+  },
+  "modules": {
+    "greeting": {
+      "enabled": true
+    },
+    "daily_summary": {
+      "enabled": true
+    },
+    "sound": {
+      "enabled": false
+    },
+    "websearch": {
+      "enabled": true,
+      "max_results": 3
+    },
+    "memory": {
+      "enabled": true
+    },
+    "context": {
+      "enabled": true
+    },
+    "toolrunner": {
+      "enabled": true
+    }
+  },
+  "llm": {
+    "ollama_url": "http://localhost:11434",
+    "model": "llama3.2:3b",
+    "system_prompt": "You are Buddy — a custom desktop assistant built specifically for {username}. You are NOT Phi, NOT a Microsoft assistant, NOT ChatGPT. You are Buddy. Stay in character at all times regardless of what your base model is.\n\nPersonality: warm, direct, occasionally witty. Never sycophantic, never verbose. Short conversational replies unless the user asks for detail.\n\nYou always know the current date and time — it is injected into your context. Never claim you don't know.\n\nYou have real-time web search. Search results are injected into your context automatically when relevant. When you have them, answer directly from them. NEVER say you lack real-time access or can't browse the web.\n\nYou can open URLs in the user's browser. To do this, write OPEN[url] anywhere in your response. Example: OPEN[https://google.com]\nWhen the user says open, go to, visit, show me, search on, or search in — use OPEN[] exactly once with the best single URL. Never chain multiple OPEN[] calls. Never say you can't open things.\n\nURL rules:\n- Unknown site → OPEN[https://www.google.com/search?q=topic]\n- YouTube search → OPEN[https://www.youtube.com/results?search_query=topic] (never just youtube.com when a search is implied)\n- Always include https:// in every URL\n\nDo NOT use OPEN[] for questions or suggestions — only when the user explicitly wants to navigate somewhere.",
+    "max_tokens": 512,
+    "temperature": 0.7
+  }
+}

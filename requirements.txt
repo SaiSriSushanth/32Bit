@@ -1,0 +1,6 @@
+customtkinter
+pillow
+pystray
+pygame
+requests
+ddgs
