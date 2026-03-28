@@ -480,8 +480,11 @@ class ChatWindow:
             return
         self.input_box.delete(0, "end")
         self._append("You", text)
-        self._append("Buddy", "")
+        self._first_token = True
+        self._thinking_anim_id = None
         self._streaming = True
+        self._append("Buddy", "▪")
+        self._start_thinking_anim()
         bus.emit("sprite_state_change", state="listening")
         self.llm.chat(text)
 
@@ -579,10 +582,37 @@ class ChatWindow:
             self._last_buddy_widget = widget
         self._scroll_to_bottom()
 
+    _THINKING_FRAMES = ["▪", "▪▪", "▪▪▪", "▪▪"]
+
+    def _start_thinking_anim(self, frame: int = 0):
+        if not self._streaming_widget or not self._first_token:
+            return
+        w = self._streaming_widget
+        chars = self._THINKING_FRAMES[frame % len(self._THINKING_FRAMES)]
+        w.configure(state="normal")
+        w.delete("1.0", "end")
+        w.insert("1.0", chars)
+        w.configure(state="disabled", fg=_SYSTEM_FG)
+        self._resize_text_widget(w)
+        self._scroll_to_bottom()
+        self._thinking_anim_id = self.sprite_win.after(
+            400, lambda: self._start_thinking_anim(frame + 1)
+        )
+
+    def _stop_thinking_anim(self):
+        if self._thinking_anim_id:
+            self.sprite_win.after_cancel(self._thinking_anim_id)
+            self._thinking_anim_id = None
+
     def _on_token(self, token: str, **kwargs):
         if not self.chat_win or not self._chat_visible:
             return
         if self._streaming_widget:
+            if self._first_token:
+                self._stop_thinking_anim()
+                self._first_token = False
+                self._streaming_widget.configure(state="normal", fg=_TEXT_FG)
+                self._streaming_widget.delete("1.0", "end")
             self._streaming_widget.configure(state="normal")
             self._streaming_widget.insert("end", token)
             self._resize_text_widget(self._streaming_widget)
@@ -590,6 +620,8 @@ class ChatWindow:
             self._scroll_to_bottom()
 
     def _on_done(self, full_text: str, **kwargs):
+        self._stop_thinking_anim()
+        self._first_token = False
         self._streaming = False
         self._streaming_widget = None
 

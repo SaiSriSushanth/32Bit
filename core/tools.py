@@ -233,8 +233,13 @@ def run_calc(expr: str) -> str:
 
 
 def run_open(url: str) -> str:
-    """Open a URL in the default browser."""
-    url = url.strip()
+    """Open a URL or local file in the default browser/app."""
+    url = url.strip().replace("\\", "/")
+    # Local file path (e.g. C:/Users/... or /home/...)
+    if (len(url) >= 2 and url[1] == ":") or url.startswith("/"):
+        uri = "file:///" + url.lstrip("/")
+        webbrowser.open(uri)
+        return f"Opened {url}"
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     webbrowser.open(url)
