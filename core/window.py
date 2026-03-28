@@ -7,11 +7,14 @@
 # Tray "Open Buddy" also shows the chat panel via the window_open event.
 # Escape or the X button collapses it back to just the sprite.
 
+import re
 import tkinter as tk
 import tkinter.font as tkfont
 import customtkinter as ctk
 from core.events import bus
 from core.sprite import SpriteAnimator
+
+_FILE_TOOL_RE = re.compile(r'FILE_(READ|LIST|SEARCH)\[')
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -73,6 +76,9 @@ class ChatWindow:
         self._msg_frame: tk.Frame | None = None
         self._frame_id = None
         self._streaming_widget: tk.Text | None = None
+        self._last_buddy_widget: tk.Text | None = None  # kept after streaming ends
+        self._streamed_text: str = ""       # accumulates tokens to detect tool calls
+        self._suppress_tokens: bool = False # True once a FILE_* pattern is detected
 
         bus.on("llm_token",         self._on_token)
         bus.on("llm_done",          self._on_done)
@@ -80,6 +86,8 @@ class ChatWindow:
         bus.on("window_open",       self._show_chat)
         bus.on("window_close",      self._hide_chat)
         bus.on("app_quit",          self._on_app_quit)
+        bus.on("tool_followup",     self._on_tool_followup)
+        bus.on("replace_last_bubble", self._on_replace_last_bubble)
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
@@ -516,10 +524,18 @@ class ChatWindow:
         widget = self._add_bubble(sender, text)
         if sender == "Buddy":
             self._streaming_widget = widget
+            self._last_buddy_widget = widget
         self._scroll_to_bottom()
 
     def _on_token(self, token: str, **kwargs):
         if not self.chat_win or not self._chat_visible:
+            return
+        if self._suppress_tokens:
+            return
+        self._streamed_text += token
+        # Stop displaying the moment a FILE_* tool call starts streaming
+        if _FILE_TOOL_RE.search(self._streamed_text):
+            self._suppress_tokens = True
             return
         if self._streaming_widget:
             self._streaming_widget.configure(state="normal")
@@ -531,12 +547,45 @@ class ChatWindow:
     def _on_done(self, full_text: str, **kwargs):
         self._streaming = False
         self._streaming_widget = None
+        self._streamed_text = ""
+        self._suppress_tokens = False
 
     def _on_push_message(self, sender: str, text: str, **kwargs):
         if self.chat_win:
             self._append(sender, text)
         else:
             self._message_buffer.append((sender, text))
+
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+
+    def _on_replace_last_bubble(self, text: str = "", **kwargs):
+        """Trim the last Buddy bubble to `text` — called when a tool strips hallucinated content."""
+        if self.sprite_win:
+            self.sprite_win.after(0, lambda: self._do_replace_last_bubble(text))
+
+    def _do_replace_last_bubble(self, text: str):
+        w = self._last_buddy_widget
+        if not w:
+            return
+        w.configure(state="normal")
+        w.delete("1.0", "end")
+        w.insert("1.0", text if text else "...")
+        w.configure(state="disabled", fg=_TEXT_FG if text else _SYSTEM_FG)
+        self._resize_text_widget(w)
+        self._scroll_to_bottom()
+
+    def _on_tool_followup(self, prompt: str = "", **kwargs):
+        """Called after a tool executes — schedules a follow-up LLM call on the main thread."""
+        if self.sprite_win:
+            self.sprite_win.after(0, lambda: self._do_tool_followup(prompt))
+
+    def _do_tool_followup(self, prompt: str):
+        if not self._chat_visible or not self.chat_win or self._streaming:
+            return
+        self._append("Buddy", "")
+        self._streaming = True
+        bus.emit("sprite_state_change", state="thinking")
+        self.llm.chat_silent(prompt)
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
 

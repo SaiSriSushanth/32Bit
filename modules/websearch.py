@@ -35,6 +35,24 @@ _NAV_TRIGGERS = {
     "search on", "search in", "search youtube", "find on", "look up on",
 }
 
+# Filesystem intent — handled by the filesystem module, not websearch
+_FILESYSTEM_TRIGGERS = {
+    "in my downloads", "in my documents", "in my desktop", "in my pictures",
+    "in my videos", "in my music", "in my files", "in my folder",
+    "in downloads", "in documents", "in desktop",
+    "my downloads", "my documents", "my desktop",
+    "find files", "find all files", "find a file", "find the file",
+    "list files", "list my files", "find file named", "file named",
+    "search my files", "search my computer", "on my computer", "on my pc",
+    "on my device", "my hard drive", "a file called", "file called",
+    "directory", "folder", "folders", "subdirectory", "subfolder",
+    "find folder", "find directory", "list folder", "list directory",
+    "inside the folder", "inside the directory", "inside my",
+    # Common file extensions — if the message references a specific file, skip websearch
+    ".txt", ".py", ".json", ".md", ".csv", ".exe", ".zip", ".pdf",
+    ".docx", ".xlsx", ".html", ".js", ".ts", ".yaml", ".yml", ".ini", ".cfg", ".log",
+}
+
 _MIN_WORDS_FOR_SEARCH = 2
 
 
@@ -43,10 +61,12 @@ def _should_search(message: str) -> bool:
     words = lower.split()
     if len(words) < _MIN_WORDS_FOR_SEARCH:
         return False
-    # Skip search if this is a navigation request — let toolrunner handle it.
+    # Skip search if this is a navigation or filesystem request.
     # Pad with spaces so "open" doesn't match inside "openai".
     padded = f" {lower} "
     if any(f" {nav} " in padded for nav in _NAV_TRIGGERS):
+        return False
+    if any(trigger in lower for trigger in _FILESYSTEM_TRIGGERS):
         return False
     return any(trigger in lower for trigger in _SEARCH_TRIGGERS)
 

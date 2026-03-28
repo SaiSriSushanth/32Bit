@@ -17,6 +17,7 @@ import modules.websearch
 import modules.memory
 import modules.context
 import modules.toolrunner
+import modules.filesystem
 
 
 class AppController:

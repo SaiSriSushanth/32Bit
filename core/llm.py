@@ -34,17 +34,28 @@ class LLMClient:
         bus.emit("sprite_state_change", state="thinking")
         threading.Thread(target=self._stream, args=(user_message,), daemon=True).start()
 
-    def _stream(self, user_message: str):
+    def chat_silent(self, hidden_prompt: str):
+        """Send a hidden follow-up prompt (not shown in chat UI). Skips context hooks.
+        Used after tool execution so the LLM can summarize results already in history."""
+        self.history.append({"role": "user", "content": hidden_prompt})
+        bus.emit("sprite_state_change", state="thinking")
+        threading.Thread(
+            target=self._stream, args=(hidden_prompt,), kwargs={"skip_hooks": True},
+            daemon=True
+        ).start()
+
+    def _stream(self, user_message: str, skip_hooks: bool = False):
         full_text = ""
         # Gather context from registered hooks (e.g. web search results)
         context_parts = []
-        for hook in self._context_hooks:
-            try:
-                result = hook(user_message)
-                if result:
-                    context_parts.append(result)
-            except Exception as e:
-                print(f"[llm] context hook error: {e}")
+        if not skip_hooks:
+            for hook in self._context_hooks:
+                try:
+                    result = hook(user_message)
+                    if result:
+                        context_parts.append(result)
+                except Exception as e:
+                    print(f"[llm] context hook error: {e}")
 
         history = list(self.history)
         if context_parts:
