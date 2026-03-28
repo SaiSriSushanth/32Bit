@@ -42,31 +42,25 @@ class VoiceModule:
         bus.on("voice_start", self._on_start)
         bus.on("voice_stop",  self._on_stop)
 
-    def _list_devices(self):
-        try:
-            import sounddevice as sd
-            devices = sd.query_devices()
-            print("[voice] Available input devices:")
-            for i, d in enumerate(devices):
-                if d["max_input_channels"] > 0:
-                    print(f"  [{i}] {d['name']} (default sr: {int(d['default_samplerate'])} Hz)")
-        except Exception as e:
-            print(f"[voice] Could not list devices: {e}")
-
     def _load_model(self, model_size: str, device: str, compute_type: str):
-        self._list_devices()
+        # Use a local path to avoid OneDrive sync issues with the HuggingFace cache
+        download_root = "C:/whisper_models"
         try:
             from faster_whisper import WhisperModel
-            self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            self._model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=download_root)
             print(f"[voice] Whisper '{model_size}' loaded on {device}")
         except Exception as e:
-            print(f"[voice] GPU load failed ({e}), retrying on CPU")
-            try:
-                from faster_whisper import WhisperModel
-                self._model = WhisperModel(model_size, device="cpu", compute_type="int8")
-                print(f"[voice] Whisper '{model_size}' loaded on CPU")
-            except Exception as e2:
-                print(f"[voice] Model load failed: {e2}")
+            if device != "cpu":
+                print(f"[voice] Load on {device} failed ({e}), retrying on CPU")
+                try:
+                    from faster_whisper import WhisperModel
+                    self._model = WhisperModel(model_size, device="cpu", compute_type="int8", download_root=download_root)
+                    print(f"[voice] Whisper '{model_size}' loaded on CPU")
+                    return
+                except Exception as e2:
+                    print(f"[voice] Model load failed: {e2}")
+            else:
+                print(f"[voice] Model load failed: {e}")
 
     def _on_start(self, **kwargs):
         if self._recording:
