@@ -27,6 +27,7 @@ _SEARCH_TRIGGERS = {
     "did", "does", "is there", "has", "have", "discontinued", "discontinue",
     "still", "available", "find", "look up", "check", "tell me about",
     "what happened", "any news", "status", "out", "launched",
+    "online", "websearch", "web search",
 }
 
 # Navigation intent — these should be handled by the OPEN tool, not websearch

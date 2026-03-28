@@ -18,6 +18,7 @@ import modules.memory
 import modules.context
 import modules.toolrunner
 import modules.filesystem
+import modules.voice
 
 
 class AppController:

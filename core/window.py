@@ -74,13 +74,17 @@ class ChatWindow:
         self._frame_id = None
         self._streaming_widget: tk.Text | None = None
         self._last_buddy_widget: tk.Text | None = None  # kept after streaming ends
+        self._mic_btn = None
+        self._mic_active = False
 
-        bus.on("llm_token",         self._on_token)
-        bus.on("llm_done",          self._on_done)
-        bus.on("push_chat_message", self._on_push_message)
-        bus.on("window_open",       self._show_chat)
-        bus.on("window_close",      self._hide_chat)
-        bus.on("app_quit",          self._on_app_quit)
+        bus.on("llm_token",           self._on_token)
+        bus.on("llm_done",            self._on_done)
+        bus.on("push_chat_message",   self._on_push_message)
+        bus.on("window_open",         self._show_chat)
+        bus.on("window_close",        self._hide_chat)
+        bus.on("app_quit",            self._on_app_quit)
+        bus.on("voice_result",        self._on_voice_result)
+        bus.on("voice_transcribing",  self._on_voice_transcribing)
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
@@ -338,6 +342,25 @@ class ChatWindow:
         )
         self._web_toggle_btn.pack(side="right", ipady=2)
 
+        self._mic_btn = tk.Button(
+            input_frame,
+            text="🎤",
+            font=pixel_font_lg,
+            bg=_INPUT_BG,
+            fg=_BTN_OFF,
+            activebackground=_TITLEBAR,
+            activeforeground=_BTN_OFF,
+            relief="flat",
+            bd=0,
+            highlightbackground=_BORDER,
+            highlightthickness=1,
+            cursor="hand2",
+            width=3,
+        )
+        self._mic_btn.pack(side="right", ipady=2, padx=(0, 4))
+        self._mic_btn.bind("<ButtonPress-1>",   self._on_mic_press)
+        self._mic_btn.bind("<ButtonRelease-1>", self._on_mic_release)
+
         # ── Scrollable bubble area ─────────────────────────────────────────────
         self._msg_canvas = tk.Canvas(
             inner, bg=_BG, highlightthickness=0, bd=0
@@ -412,6 +435,42 @@ class ChatWindow:
         else:
             self._web_toggle_btn.configure(fg=_BTN_OFF, text="🔍")
         bus.emit("websearch_force", enabled=self._web_search_on)
+
+    # ── Voice input ───────────────────────────────────────────────────────────
+
+    def _on_mic_press(self, event=None):
+        if self._mic_active:
+            return
+        self._mic_active = True
+        if self._mic_btn:
+            self._mic_btn.configure(fg="#ff4444", text="⏹")
+        bus.emit("voice_start")
+
+    def _on_mic_release(self, event=None):
+        if not self._mic_active:
+            return
+        self._mic_active = False
+        if self._mic_btn:
+            self._mic_btn.configure(fg="#ffaa00", text="…")
+        bus.emit("voice_stop")
+
+    def _on_voice_transcribing(self, **kwargs):
+        if self.sprite_win and self._mic_btn:
+            self.sprite_win.after(0, lambda: self._mic_btn.configure(fg="#ffaa00", text="…"))
+
+    def _on_voice_result(self, text: str = "", **kwargs):
+        def _apply():
+            if self._mic_btn:
+                self._mic_btn.configure(fg=_BTN_OFF, text="🎤")
+            if not text:
+                return
+            # Fill input box with transcribed text and send
+            self.input_box.configure(fg=_INPUT_FG)
+            self.input_box.delete(0, "end")
+            self.input_box.insert(0, text)
+            self._on_send()
+        if self.sprite_win:
+            self.sprite_win.after(0, _apply)
 
     # ── Messaging ─────────────────────────────────────────────────────────────
 
