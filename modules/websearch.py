@@ -93,10 +93,12 @@ class WebSearchModule:
         state = "ON" if enabled else "OFF"
         print(f"[websearch] Manual override: {state}")
 
-    def _reformulate_query(self, message: str) -> str:
-        """Ask the LLM to rewrite the user's message into a concise web search query.
-        Uses a direct Ollama call with a neutral system prompt so the model cannot
-        apply tools like OPEN[] — it only outputs plain search keywords."""
+    def _judge_and_reformulate(self, message: str):
+        """Single LLM call that both judges whether a web search is needed and
+        reformulates the query if so.
+
+        Returns a search query string if search is warranted, or None to skip.
+        Falls back to the original message on failure (optimistic: search anyway)."""
         try:
             # Only use the immediately prior exchange for context.
             # More history causes topic bleed (e.g. Spotify context polluting a weather query).
@@ -110,9 +112,12 @@ class WebSearchModule:
                 {
                     "role": "system",
                     "content": (
-                        "You are a search query generator. "
-                        "Given a conversation, output ONLY a short plain-text web search query (5 words or fewer). "
-                        "No URLs. No brackets. No OPEN[]. No special syntax. Just plain keywords."
+                        "You decide whether a user message needs a real-time web search. "
+                        "If it does, output ONLY a short plain-text search query (5 words or fewer). "
+                        "If it does NOT need a web search (e.g. it's a file/folder question, "
+                        "a math question, asking to open a URL, casual chat, or something you "
+                        "can answer from general knowledge), output exactly: NO\n"
+                        "No URLs. No brackets. No OPEN[]. No special syntax. Just plain keywords or NO."
                     )
                 },
                 {
@@ -120,7 +125,7 @@ class WebSearchModule:
                     "content": (
                         f"Conversation:\n{history_text}"
                         f"User: {message}\n\n"
-                        "Search query:"
+                        "Search query or NO:"
                     )
                 }
             ]
@@ -128,7 +133,7 @@ class WebSearchModule:
                 "model": self._llm.model,
                 "messages": messages,
                 "stream": False,
-                "options": {"num_predict": 20, "temperature": 0.2},
+                "options": {"num_predict": 20, "temperature": 0.1},
             }
             resp = _requests.post(
                 f"{self._llm.base_url}/api/chat",
@@ -136,15 +141,21 @@ class WebSearchModule:
                 timeout=15
             )
             resp.raise_for_status()
-            query = resp.json()["message"]["content"].strip().strip('"').strip("'")
+            answer = resp.json()["message"]["content"].strip().strip('"').strip("'")
+
+            if answer.upper() == "NO" or answer.upper().startswith("NO "):
+                print(f"[websearch] LLM judge: skip search for {message!r}")
+                return None
+
             # Sanity check — reject anything that looks like a URL or tool call
-            if not query or len(query) > 120 or "OPEN[" in query or "http" in query:
+            if not answer or len(answer) > 120 or "OPEN[" in answer or "http" in answer:
                 return message
-            print(f"[websearch] Reformulated: {message!r} → {query!r}")
-            return query
+
+            print(f"[websearch] LLM judge: {message!r} → {answer!r}")
+            return answer
         except Exception as e:
-            print(f"[websearch] query reformulation failed: {e}")
-            return message
+            print(f"[websearch] judge+reformulate failed: {e}")
+            return message  # optimistic fallback: search with original message
 
     def _scrape_top_result(self, url: str) -> str:
         """Fetch a URL via Jina Reader and return a truncated plain-text snippet."""
@@ -169,7 +180,9 @@ class WebSearchModule:
             return ""
         try:
             from ddgs import DDGS
-            query = self._reformulate_query(message)
+            query = self._judge_and_reformulate(message)
+            if query is None:
+                return ""
             results = DDGS().text(query, max_results=self._max_results)
             if not results:
                 return ""

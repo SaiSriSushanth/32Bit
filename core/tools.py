@@ -60,7 +60,23 @@ def run_file_read(path: str) -> str:
         return "[blocked: sensitive file path]"
     try:
         if not os.path.isfile(path):
-            return f"[file not found: {path}]"
+            # Try resolving a relative/partial path against common roots.
+            # Strip drive prefix so "C:/foo/bar.txt" → "foo/bar.txt" for candidate building.
+            home = str(pathlib.Path.home())
+            _, bare = os.path.splitdrive(path)
+            bare = bare.lstrip("/\\")
+            candidates = [
+                os.path.join("C:/", bare),
+                os.path.join("D:/", bare),
+                os.path.join(home, bare),
+                os.path.join(home, "Desktop", bare),
+                os.path.join(home, "Documents", bare),
+                os.path.join(home, "Downloads", bare),
+            ]
+            resolved = next((c for c in candidates if os.path.isfile(c)), None)
+            if resolved is None:
+                return f"[file not found: {path}]"
+            path = resolved
         size = os.path.getsize(path)
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read(_MAX_READ_CHARS)
@@ -77,15 +93,21 @@ def run_file_list(path: str) -> str:
     aliases = _dir_aliases()
     resolved = aliases.get(path.strip().lower(), _expand(path))
 
-    # If not found directly, try common root locations
+    # If not found directly, try common root locations.
+    # Strip any drive prefix first so that e.g. "C:/AiLeadsPOC" → "AiLeadsPOC"
+    # and we correctly try Desktop/Documents/Downloads etc.
     if not os.path.isdir(resolved):
         home = str(pathlib.Path.home())
+        _, bare = os.path.splitdrive(path.strip())
+        bare = bare.lstrip("/\\")
         candidates = [
-            os.path.join("C:/", path.strip()),
-            os.path.join("D:/", path.strip()),
-            os.path.join(home, path.strip()),
-            os.path.join(home, "Documents", path.strip()),
-            os.path.join(home, "Desktop", path.strip()),
+            os.path.join("C:/", bare),
+            os.path.join("D:/", bare),
+            os.path.join(home, bare),
+            os.path.join(home, "Desktop", bare),
+            os.path.join(home, "Documents", bare),
+            os.path.join(home, "Downloads", bare),
+            os.path.join(home, "Pictures", bare),
         ]
         for c in candidates:
             if os.path.isdir(c):
@@ -95,7 +117,12 @@ def run_file_list(path: str) -> str:
     path = os.path.normpath(resolved)
     try:
         if not os.path.isdir(path):
-            return f"[directory not found: '{path}'. Try using the full path, e.g. FILE_LIST[C:/Projects]]"
+            # Last resort: search for the deepest path component by name
+            folder_name = os.path.basename(path.rstrip("/\\")) or path
+            search_result = run_file_search(folder_name)
+            if not search_result.startswith("[no files"):
+                return f"[Could not find '{path}' directly. Search results for '{folder_name}':\n{search_result}]"
+            return f"[directory not found: '{path}']"
 
         # Use listdir for reliability on Windows (scandir can return empty on some paths)
         names = sorted(os.listdir(path))
